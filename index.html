@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QR Ticket Scanner</title>
+
+<!-- Mobile UI Styling -->
+<style>
+    body {
+        margin: 0; font-family: Arial, sans-serif;
+        background: #f0f7ff;
+    }
+
+    .container {
+        max-width: 420px;
+        margin: auto;
+        background: white;
+        padding: 10px;
+        border-radius: 15px;
+        box-shadow: 0 0 20px rgba(0,0,0,0.1);
+    }
+
+    h2 {
+        text-align: center;
+        color: #0b74ff;
+    }
+
+    video {
+        width: 100%; border-radius: 12px; 
+        margin-bottom: 10px;
+        background: black;
+    }
+
+    .status-box {
+        padding: 12px;
+        border-radius: 10px;
+        text-align: center;
+        font-size: 18px;
+        font-weight: bold;
+        margin-bottom: 10px;
+    }
+
+    .valid { background: #d9f6dd; color: #0a7a1c; }
+    .invalid { background: #ffe1e1; color: #d11a1a; }
+    .used { background: #fff1cc; color: #b58900; }
+    .neutral { background: #e9f3ff; color: #004a99; }
+
+    .ticket-info {
+        background: #fff;
+        box-shadow: 0 5px 12px rgba(0,0,0,0.08);
+        padding: 15px;
+        border-radius: 12px;
+        margin-bottom: 10px;
+    }
+
+    .dashboard {
+        display: flex;
+        gap: 10px;
+        justify-content: space-between;
+    }
+
+    .card {
+        flex: 1;
+        background: #eaf4ff;
+        padding: 12px;
+        border-radius: 10px;
+        text-align: center;
+        font-weight: bold;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.06);
+    }
+
+    #fileInput { margin-top: 10px; }
+</style>
+
+</head>
+<body>
+
+<div class="container">
+    <h2>QR Ticket Scanner</h2>
+
+    <input type="file" id="fileInput" accept=".xlsx" />
+
+    <video id="preview" autoplay playsinline></video>
+
+    <div id="status" class="status-box neutral">Ready to Scan</div>
+
+    <div class="ticket-info">
+        <div><strong>Name:</strong> <span id="tName">—</span></div>
+        <div><strong>Ticket No:</strong> <span id="tNumber">—</span></div>
+        <div><strong>Entry Time:</strong> <span id="tTime">—</span></div>
+    </div>
+
+    <div class="dashboard">
+        <div class="card">Total<br><span id="total">0</span></div>
+        <div class="card">Checked<br><span id="checked">0</span></div>
+        <div class="card">Remaining<br><span id="remaining">0</span></div>
+    </div>
+</div>
+
+<!-- QR Scanner JS -->
+<script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.min.js"></script>
+
+<!-- XLSX Reader -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
+<script>
+
+let ticketDB = {};
+let total = 0, checked = 0;
+let usedTickets = {};
+
+// Load Excel sheet
+document.getElementById("fileInput").addEventListener("change", event => {
+    const file = event.target.files[0];
+    let reader = new FileReader();
+
+    reader.onload = e => {
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: "array" });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet);
+
+        rows.forEach(r => {
+            ticketDB[r.Ticket] = { name: r.Name, used: false };
+        });
+
+        total = rows.length;
+        updateCounts();
+        alert("Tickets loaded successfully!");
+    };
+
+    reader.readAsArrayBuffer(file);
+});
+
+function updateCounts() {
+    document.getElementById("total").innerText = total;
+    document.getElementById("checked").innerText = checked;
+    document.getElementById("remaining").innerText = total - checked;
+}
+
+const video = document.getElementById("preview");
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d");
+
+// Start Camera
+navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+.then(stream => {
+    video.srcObject = stream;
+})
+.catch(err => alert("Camera not available"));
+
+setInterval(() => {
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(imageData.data, canvas.width, canvas.height);
+
+    if (code) handleScan(code.data);
+
+}, 500);
+
+// Handle QR Scan
+function handleScan(ticket) {
+    let statusBox = document.getElementById("status");
+
+    if (!ticketDB[ticket]) {
+        statusBox.className = "status-box invalid";
+        statusBox.textContent = "Invalid Ticket";
+        setTicketInfo("—", ticket, "—");
+        return;
+    }
+
+    let ticketData = ticketDB[ticket];
+
+    if (ticketData.used) {
+        statusBox.className = "status-box used";
+        statusBox.textContent = "Already Used";
+    } else {
+        statusBox.className = "status-box valid";
+        statusBox.textContent = "Valid Ticket";
+
+        ticketData.used = true;
+        checked++;
+        updateCounts();
+
+        sendToGoogleSheet(ticket, ticketData.name);
+    }
+
+    setTicketInfo(ticketData.name, ticket, new Date().toLocaleString());
+}
+
+function setTicketInfo(name, number, time) {
+    document.getElementById("tName").textContent = name;
+    document.getElementById("tNumber").textContent = number;
+    document.getElementById("tTime").textContent = time;
+}
+
+// SEND DATA TO GOOGLE SHEET
+function sendToGoogleSheet(ticket, name) {
+    fetch("https://script.google.com/macros/s/AKfycbxuu_QwkCYwjg6WUcCIN29NHNUfyzSkdtInM5dR34gnVdBNhNhbOyIgfwqunCQ_ocBHww/exec"),{
+        method: "POST",
+        body: JSON.stringify({
+            ticket: ticket,
+            name: name,
+            time: new Date().toLocaleString()
+        })
+    };
+}
+
+</script>
+
+</body>
+</html>
